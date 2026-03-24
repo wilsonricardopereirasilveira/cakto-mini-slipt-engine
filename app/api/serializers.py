@@ -8,6 +8,13 @@ class SplitInputSerializer(serializers.Serializer):
     role = serializers.CharField()
     percent = serializers.DecimalField(max_digits=5, decimal_places=2)
 
+    def validate_percent(self, value: Decimal) -> Decimal:
+        if value <= Decimal("0"):
+            raise serializers.ValidationError("percent must be greater than 0")
+        if value > Decimal("100"):
+            raise serializers.ValidationError("percent must be less than or equal to 100")
+        return value
+
 
 class PaymentInputSerializer(serializers.Serializer):
     amount = serializers.DecimalField(max_digits=12, decimal_places=2)
