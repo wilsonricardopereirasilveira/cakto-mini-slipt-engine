@@ -1,5 +1,5 @@
 from django.http import Http404
-from django.urls import path
+from django.urls import include, path
 
 
 def root_not_found(_request):
@@ -7,5 +7,6 @@ def root_not_found(_request):
 
 
 urlpatterns = [
+    path("api/v1/", include("app.api.urls")),
     path("", root_not_found),
 ]
