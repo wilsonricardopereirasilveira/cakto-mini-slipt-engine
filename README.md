@@ -2,6 +2,10 @@
 
 Mini Split Engine built with Django REST Framework and PostgreSQL to calculate payment splits, persist captured payments, enforce idempotency, and register outbox events for downstream processing.
 
+## Pull Request
+
+https://github.com/wilsonricardopereirasilveira/cakto-mini-slipt-engine/pull/1
+
 ## How To Run
 
 ### Prerequisites
