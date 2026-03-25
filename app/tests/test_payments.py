@@ -157,10 +157,103 @@ class PaymentAPITestCase(TestCase):
         self.assertEqual(second_response.status_code, status.HTTP_409_CONFLICT)
         self.assertEqual(Payment.objects.count(), 1)
 
+    def test_quote_does_not_persist(self):
+        response = self._post_quote(
+            {
+                "amount": "100.00",
+                "currency": "BRL",
+                "payment_method": "card",
+                "installments": 1,
+                "splits": [
+                    {
+                        "recipient_id": "seller_1",
+                        "role": "seller",
+                        "percent": "100.00",
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(Payment.objects.count(), 0)
+        self.assertNotIn("payment_id", response.data)
+
+    def test_split_max_recipients(self):
+        response = self._post_payment(
+            {
+                "amount": "1000.00",
+                "currency": "BRL",
+                "payment_method": "pix",
+                "installments": 1,
+                "splits": [
+                    {"recipient_id": "r1", "role": "producer", "percent": "30.00"},
+                    {"recipient_id": "r2", "role": "affiliate", "percent": "25.00"},
+                    {"recipient_id": "r3", "role": "coproducer", "percent": "20.00"},
+                    {"recipient_id": "r4", "role": "manager", "percent": "15.00"},
+                    {"recipient_id": "r5", "role": "closer", "percent": "10.00"},
+                ],
+            }
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(len(response.data["receivables"]), 5)
+        receivables_total = sum(
+            Decimal(receivable["amount"]) for receivable in response.data["receivables"]
+        )
+        self.assertEqual(receivables_total, Decimal(response.data["net_amount"]))
+
+    def test_card_1x_fee_different_from_card_2x(self):
+        one_installment_response = self._post_quote(
+            {
+                "amount": "1000.00",
+                "currency": "BRL",
+                "payment_method": "card",
+                "installments": 1,
+                "splits": [
+                    {
+                        "recipient_id": "seller_1",
+                        "role": "seller",
+                        "percent": "100.00",
+                    }
+                ],
+            }
+        )
+        two_installments_response = self._post_quote(
+            {
+                "amount": "1000.00",
+                "currency": "BRL",
+                "payment_method": "card",
+                "installments": 2,
+                "splits": [
+                    {
+                        "recipient_id": "seller_1",
+                        "role": "seller",
+                        "percent": "100.00",
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(one_installment_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(two_installments_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(one_installment_response.data["platform_fee_amount"], "39.90")
+        self.assertEqual(two_installments_response.data["platform_fee_amount"], "69.90")
+        self.assertNotEqual(
+            one_installment_response.data["platform_fee_amount"],
+            two_installments_response.data["platform_fee_amount"],
+        )
+
     def _post_payment(self, payload: dict, idempotency_key: str | None = None):
         return self.client.post(
             self.payments_url,
             payload,
             format="json",
             HTTP_IDEMPOTENCY_KEY=idempotency_key or str(uuid.uuid4()),
+        )
+
+    def _post_quote(self, payload: dict):
+        return self.client.post(
+            "/api/v1/checkout/quote",
+            payload,
+            format="json",
         )
