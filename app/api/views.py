@@ -2,6 +2,7 @@ import hashlib
 import json
 
 from django.db import transaction
+from django.db.utils import IntegrityError
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -58,43 +59,70 @@ class PaymentCreateView(APIView):
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-        with transaction.atomic():
-            payment = Payment.objects.create(
-                idempotency_key=idempotency_key,
-                idempotency_payload_hash=payload_hash,
-                gross_amount=calculation["gross_amount"],
-                platform_fee_amount=calculation["platform_fee_amount"],
-                net_amount=calculation["net_amount"],
-                payment_method=serializer.validated_data["payment_method"],
-                installments=serializer.validated_data["installments"],
-                currency=serializer.validated_data["currency"],
-            )
+        try:
+            with transaction.atomic():
+                payment = (
+                    Payment.objects.select_for_update()
+                    .filter(idempotency_key=idempotency_key)
+                    .prefetch_related("ledger_entries", "outbox_events")
+                    .first()
+                )
+                if payment:
+                    if payment.idempotency_payload_hash != payload_hash:
+                        return Response(
+                            {"detail": "Idempotency-Key conflict: payload differs from original request"},
+                            status=status.HTTP_409_CONFLICT,
+                        )
+                    return Response(_serialize_payment(payment), status=status.HTTP_200_OK)
 
-            LedgerEntry.objects.bulk_create(
-                [
-                    LedgerEntry(
-                        payment=payment,
-                        recipient_id=receivable["recipient_id"],
-                        role=receivable["role"],
-                        amount=receivable["amount"],
-                    )
-                    for receivable in calculation["receivables"]
-                ]
-            )
+                payment = Payment.objects.create(
+                    idempotency_key=idempotency_key,
+                    idempotency_payload_hash=payload_hash,
+                    gross_amount=calculation["gross_amount"],
+                    platform_fee_amount=calculation["platform_fee_amount"],
+                    net_amount=calculation["net_amount"],
+                    payment_method=serializer.validated_data["payment_method"],
+                    installments=serializer.validated_data["installments"],
+                    currency=serializer.validated_data["currency"],
+                )
 
-            outbox_event = OutboxEvent.objects.create(
-                payment=payment,
-                payload={
-                    "payment_id": str(payment.id),
-                    "receivables": [
-                        {
-                            "recipient_id": receivable["recipient_id"],
-                            "role": receivable["role"],
-                            "amount": str(receivable["amount"]),
-                        }
+                LedgerEntry.objects.bulk_create(
+                    [
+                        LedgerEntry(
+                            payment=payment,
+                            recipient_id=receivable["recipient_id"],
+                            role=receivable["role"],
+                            amount=receivable["amount"],
+                        )
                         for receivable in calculation["receivables"]
-                    ],
-                },
+                    ]
+                )
+
+                outbox_event = OutboxEvent.objects.create(
+                    payment=payment,
+                    payload={
+                        "payment_id": str(payment.id),
+                        "receivables": [
+                            {
+                                "recipient_id": receivable["recipient_id"],
+                                "role": receivable["role"],
+                                "amount": str(receivable["amount"]),
+                            }
+                            for receivable in calculation["receivables"]
+                        ],
+                    },
+                )
+        except IntegrityError:
+            payment = (
+                Payment.objects.filter(idempotency_key=idempotency_key)
+                .prefetch_related("ledger_entries", "outbox_events")
+                .first()
+            )
+            if payment and payment.idempotency_payload_hash == payload_hash:
+                return Response(_serialize_payment(payment), status=status.HTTP_200_OK)
+            return Response(
+                {"detail": "Idempotency-Key conflict: payload differs from original request"},
+                status=status.HTTP_409_CONFLICT,
             )
 
         return Response(

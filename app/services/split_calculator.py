@@ -38,6 +38,12 @@ def calculate(amount: Decimal, payment_method: str, installments: int, splits: l
     residue = net_amount - distributed_amount
     receivables[0]["amount"] += residue
 
+    for receivable in receivables:
+        if receivable["amount"] <= Decimal("0"):
+            raise ValueError(
+                f"split amount for recipient '{receivable['recipient_id']}' is zero or negative after rounding"
+            )
+
     return {
         "gross_amount": gross_amount,
         "platform_fee_amount": platform_fee_amount,
